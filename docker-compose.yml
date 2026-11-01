@@ -1,0 +1,157 @@
+services:
+  cache:
+    image: redis:4-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  database:
+    image: mysql:8.0-oracle
+    restart: unless-stopped
+    # Binary logging is on by default in MySQL 8 with a 30-day expiry. Nothing
+    # here replicates from or reads the binlog, and the telematics ingest made it
+    # grow past 300 GB locally, so it is switched off.
+    command: ["mysqld", "--skip-log-bin"]
+    ports:
+      - "3306:3306"
+    volumes:
+      - "./docker/database/:/docker-entrypoint-initdb.d/"
+      - "./docker/database/mysql:/var/lib/mysql"
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: "fleetbase"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  socket:
+    image: fleetbase/fleetbase-socket:latest
+    build:
+      context: ./socket
+    restart: unless-stopped
+    # Only the public websocket port is published. The internal publish/stats listener
+    # (8001) stays on the compose network, where the API reaches it as http://socket:8001.
+    ports:
+      - "38000:8000"
+    environment:
+      # Socket auth. SOCKETCLUSTER_AUTH_ENABLED and SOCKETCLUSTER_AUTH_KEY come from the
+      # project .env file that scripts/docker-install.sh writes (or from
+      # docker-compose.override.yml) and must be the same for socket, application, queue and
+      # scheduler. Auth stays off until SOCKETCLUSTER_AUTH_ENABLED=true, so clients that
+      # connect without socket tokens keep working; see socket/README.md for the rollout.
+      SOCKETCLUSTER_AUTH_ENABLED: ${SOCKETCLUSTER_AUTH_ENABLED:-false}
+      SOCKETCLUSTER_AUTH_KEY: ${SOCKETCLUSTER_AUTH_KEY:-}
+      # off | log | enforce. Empty = enforce once switched on with a key.
+      SOCKETCLUSTER_AUTH_MODE: ${SOCKETCLUSTER_AUTH_MODE:-}
+      # The API's authorize endpoint, served by the application container's octane server.
+      SOCKETCLUSTER_AUTHORIZE_URL: http://application:8000/int/v1/socket/authorize
+      # SOCKETCLUSTER_OPTIONS can be set via docker-compose.override.yml for specific environments
+      # For production, use: SOCKETCLUSTER_OPTIONS: '{"origins":"https://yourdomain.com:*"}'
+      # For development, use: SOCKETCLUSTER_OPTIONS: '{"origins":"http://localhost:*"}'
+
+  scheduler:
+    image: fleetbase/fleetbase-api:latest
+    command: ["go-crond", "--verbose", "root:./crontab"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "mysql://root@database/fleetbase"
+      QUEUE_CONNECTION: redis
+      CACHE_DRIVER: redis
+      CACHE_PATH: /fleetbase/api/storage/framework/cache
+      CACHE_URL: tcp://cache
+      REDIS_URL: tcp://cache
+      SOCKETCLUSTER_AUTH_ENABLED: ${SOCKETCLUSTER_AUTH_ENABLED:-false}
+      SOCKETCLUSTER_AUTH_KEY: ${SOCKETCLUSTER_AUTH_KEY:-}
+      SOCKETCLUSTER_PUBLISH_URL: http://socket:8001
+      # Origin header for the API's websocket publisher; must be allowed by the socket
+      # server's SOCKETCLUSTER_OPTIONS origins (scripts/docker-install.sh writes it to .env).
+      SOCKETCLUSTER_ORIGIN: ${SOCKETCLUSTER_ORIGIN:-}
+    depends_on:
+      - database
+      - cache
+
+  queue:
+    image: fleetbase/fleetbase-api:latest
+    command: ["php", "artisan", "queue:work"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "php", "artisan", "queue:status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      DATABASE_URL: "mysql://root@database/fleetbase"
+      QUEUE_CONNECTION: redis
+      CACHE_DRIVER: redis
+      CACHE_PATH: /fleetbase/api/storage/framework/cache
+      CACHE_URL: tcp://cache
+      REDIS_URL: tcp://cache
+      SOCKETCLUSTER_AUTH_ENABLED: ${SOCKETCLUSTER_AUTH_ENABLED:-false}
+      SOCKETCLUSTER_AUTH_KEY: ${SOCKETCLUSTER_AUTH_KEY:-}
+      SOCKETCLUSTER_PUBLISH_URL: http://socket:8001
+      # Origin header for the API's websocket publisher; must be allowed by the socket
+      # server's SOCKETCLUSTER_OPTIONS origins (scripts/docker-install.sh writes it to .env).
+      SOCKETCLUSTER_ORIGIN: ${SOCKETCLUSTER_ORIGIN:-}
+    depends_on:
+      - database
+      - cache
+
+  console:
+    restart: unless-stopped
+    build:
+      context: ./console
+      dockerfile: Dockerfile
+      args:
+        ENVIRONMENT: development
+    ports:
+      - "4200:4200"
+    volumes:
+      - ./console/fleetbase.config.json:/usr/share/nginx/html/fleetbase.config.json
+
+  application:
+    restart: unless-stopped
+    image: fleetbase/fleetbase-api:latest
+    volumes:
+      - ./api/.env:/fleetbase/api/.env
+      - ./api/storage/app:/fleetbase/api/storage/app
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: "mysql://root@database/fleetbase"
+      QUEUE_CONNECTION: redis
+      CACHE_DRIVER: redis
+      CACHE_PATH: /fleetbase/api/storage/framework/cache
+      CACHE_URL: tcp://cache
+      REDIS_URL: tcp://cache
+      SESSION_DOMAIN: localhost
+      BROADCAST_DRIVER: socketcluster
+      MAIL_FROM_NAME: Fleetbase
+      APP_NAME: Fleetbase
+      LOG_CHANNEL: daily
+      REGISTRY_HOST: https://registry.fleetbase.io
+      REGISTRY_PREINSTALLED_EXTENSIONS: "true"
+      OSRM_HOST: https://router.project-osrm.org
+      SOCKETCLUSTER_AUTH_ENABLED: ${SOCKETCLUSTER_AUTH_ENABLED:-false}
+      SOCKETCLUSTER_AUTH_KEY: ${SOCKETCLUSTER_AUTH_KEY:-}
+      SOCKETCLUSTER_PUBLISH_URL: http://socket:8001
+      # Origin header for the API's websocket publisher; must be allowed by the socket
+      # server's SOCKETCLUSTER_OPTIONS origins (scripts/docker-install.sh writes it to .env).
+      SOCKETCLUSTER_ORIGIN: ${SOCKETCLUSTER_ORIGIN:-}
+    depends_on:
+      - database
+      - cache
+      - queue
+
+  httpd:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: docker/httpd/Dockerfile
+    ports:
+      - "8000:80"
+    depends_on:
+      - application

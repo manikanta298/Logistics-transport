@@ -1,0 +1,92 @@
+import EmberRouter from '@ember/routing/router';
+import config from '@fleetbase/console/config/environment';
+
+export default class Router extends EmberRouter {
+    location = config.locationType;
+    rootURL = config.rootURL;
+}
+
+Router.map(function () {
+    // A public page can carry more of its own path, e.g. /~/t/{company}/{tracking number}:
+    // the `virtual` route still renders it, and the page reads the rest from the URL.
+    this.route('virtual', { path: '/~/:slug' }, function () {
+        this.route('path', { path: '/*path' });
+    });
+    this.route('install');
+    this.route('onboard', function () {
+        this.route('index', { path: '/' });
+    });
+    this.route('auth', function () {
+        this.route('login', { path: '/' });
+        this.route('forgot-password');
+        this.route('reset-password', { path: '/reset-password/:id' });
+        this.route('two-fa');
+        this.route('verification');
+        this.route('confirm-email-change', { path: '/confirm-email-change/:id' });
+        this.route('verify-contact', { path: '/verify-contact/:id' });
+        this.route('portal-login', { path: '/portal' });
+        this.route('oauth-callback', { path: '/oauth/callback' });
+    });
+    // "Continue with Fleetbase": an app's consent screen. Outside `console` so a signed-out
+    // user can land here before signing in.
+    this.route('oauth', function () {
+        this.route('authorize');
+    });
+    this.route('invite', { path: 'join' }, function () {
+        this.route('for-driver', { path: '/fleet/:public_id' });
+        this.route('for-user', { path: '/org/:public_id' });
+    });
+    this.route('console', { path: '/' }, function () {
+        this.route('home', { path: '/' });
+        this.route('notifications');
+        this.route('account', function () {
+            this.route('virtual', { path: '/:slug' });
+            this.route('auth');
+            this.route('organizations');
+        });
+        this.route('settings', function () {
+            this.route('virtual', { path: '/:slug' });
+            this.route('two-fa');
+            this.route('auth');
+            this.route('notifications');
+        });
+        this.route('virtual', { path: '/:slug' });
+        this.route('admin', function () {
+            this.route('config', function () {
+                this.route('database');
+                this.route('cache');
+                this.route('filesystem');
+                this.route('mail');
+                this.route('notification-channels', { path: '/push-notifications' });
+                this.route('queue');
+                this.route('services');
+                this.route('socket');
+            });
+            this.route('branding');
+            this.route('two-fa-settings');
+            this.route('oauth-settings');
+            this.route('oauth-apps');
+            this.route('platform-api-token');
+            this.route('api-consumers');
+            this.route('rate-limits');
+            this.route('sms-guard');
+            this.route('database-backups');
+            this.route('virtual', { path: '/:slug' });
+            this.route('organizations', function () {
+                this.route('index', { path: '/' });
+                this.route('details', { path: '/:public_id' }, function () {
+                    this.route('index', { path: '/' });
+                    this.route('users');
+                    this.route('extensions');
+                    this.route('activity');
+                    this.route('settings');
+                    this.route('extensions-tab', { path: '/extensions/:slug' });
+                });
+            });
+            this.route('schedule-monitor', function () {
+                this.route('logs', { path: '/:id/logs' });
+            });
+        });
+    });
+    this.route('catch', { path: '/*' });
+});
